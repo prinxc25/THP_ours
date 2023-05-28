@@ -73,4 +73,4 @@ def get_dataloader(data, batch_size, shuffle=True):
         collate_fn=collate_fn,
         shuffle=shuffle
     )
-    return dl
+    return dl # will output three list one for start time, end time and event type (padderd sequences)
