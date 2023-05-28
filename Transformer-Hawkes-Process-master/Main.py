@@ -125,14 +125,18 @@ def eval_epoch(model, validation_data, pred_loss_func, opt):
 
 def train(model, training_data, validation_data, optimizer, scheduler, pred_loss_func, opt):
     """ Start training. """
+    train_event_losses = []  # validation log-likelihood
+    train_pred_losses = []  # validation event type prediction accuracy
+    train_rmse = []  # validation event time prediction RMSE
 
     valid_event_losses = []  # validation log-likelihood
     valid_pred_losses = []  # validation event type prediction accuracy
     valid_rmse = []  # validation event time prediction RMSE
+
     for epoch_i in range(opt.epoch):
         epoch = epoch_i + 1
         print('[ Epoch', epoch, ']')
-
+        # print(f'alpha : {model.alpha}, beta : {model.beta}, gamma 1: {model.gamma_1}, gamma 2: {model.gamma_2}')
         start = time.time()
         train_event, train_type, train_time = train_epoch(model, training_data, optimizer, pred_loss_func, opt)
         print('  - (Training)    loglikelihood: {ll: 8.5f}, '
@@ -147,13 +151,22 @@ def train(model, training_data, validation_data, optimizer, scheduler, pred_loss
               'elapse: {elapse:3.3f} min'
               .format(ll=valid_event, type=valid_type, rmse=valid_time, elapse=(time.time() - start) / 60))
 
+        train_event_losses += [train_event]
+        train_pred_losses += [train_type]
+        train_rmse += [train_time]
+        print('  - [Info] (Training) Maximum ll: {event: 8.5f}, '
+              'Maximum accuracy: {pred: 8.5f}, Minimum RMSE: {rmse: 8.5f}'
+              .format(event=max(train_event_losses), pred=max(train_pred_losses), rmse=min(train_rmse)))
+        
+        
         valid_event_losses += [valid_event]
         valid_pred_losses += [valid_type]
         valid_rmse += [valid_time]
-        print('  - [Info] Maximum ll: {event: 8.5f}, '
+        print('  - [Info] (testing) Maximum ll: {event: 8.5f}, '
               'Maximum accuracy: {pred: 8.5f}, Minimum RMSE: {rmse: 8.5f}'
               .format(event=max(valid_event_losses), pred=max(valid_pred_losses), rmse=min(valid_rmse)))
-
+        
+        
         # logging
         with open(opt.log, 'a') as f:
             f.write('{epoch}, {ll: 8.5f}, {acc: 8.5f}, {rmse: 8.5f}\n'
