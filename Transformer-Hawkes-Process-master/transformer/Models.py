@@ -13,7 +13,8 @@ def get_non_pad_mask(seq):
 
     assert seq.dim() == 2
     return seq.ne(Constants.PAD).type(torch.float).unsqueeze(-1)
-
+    # the start time let say was a list of max_length* no of event streams in each batch essentially max_length* batch_size
+    # here through thus code we convert it into a 2 dim list breaking it for each event stream. 
 
 def get_attn_key_pad_mask(seq_k, seq_q):
     """ For masking out the padding part of key sequence. """
@@ -23,7 +24,7 @@ def get_attn_key_pad_mask(seq_k, seq_q):
     padding_mask = seq_k.eq(Constants.PAD)
     padding_mask = padding_mask.unsqueeze(1).expand(-1, len_q, -1)  # b x lq x lk
     return padding_mask
-
+    # returns a boolean list of list for each event stream which tells whether that corresponding index was padded or not
 
 def get_subsequent_mask(seq):
     """ For masking out the subsequent info, i.e., masked self-attention. """
@@ -33,7 +34,7 @@ def get_subsequent_mask(seq):
         torch.ones((len_s, len_s), device=seq.device, dtype=torch.uint8), diagonal=1)
     subsequent_mask = subsequent_mask.unsqueeze(0).expand(sz_b, -1, -1)  # b x ls x ls
     return subsequent_mask
-
+   # [[[0, 1, 1, 1],[0, 0, 1, 1],[0, 0, 0, 1],[0, 0, 0, 0]], masking future event info of prediction for each event stream
 
 class Encoder(nn.Module):
     """ A encoder model with self attention mechanism. """
@@ -64,9 +65,9 @@ class Encoder(nn.Module):
         Output: batch*seq_len*d_model.
         """
 
-        result = time.unsqueeze(-1) / self.position_vec
-        result[:, :, 0::2] = torch.sin(result[:, :, 0::2])
-        result[:, :, 1::2] = torch.cos(result[:, :, 1::2])
+        result = time.unsqueeze(-1) / self.position_vec # unsqueeze increases one more dim, a list of shape 3*4 will become 3*4*1
+        result[:, :, 0::2] = torch.sin(result[:, :, 0::2]) # starting with 0 take second index value so, we will have 0, 2, 4, ... even indices
+        result[:, :, 1::2] = torch.cos(result[:, :, 1::2]) # starting with 1 take second index value so, we will have 1, 3, 5, ... odd indices
         return result * non_pad_mask
 
     def forward(self, event_type, event_time, non_pad_mask):
@@ -74,12 +75,16 @@ class Encoder(nn.Module):
 
         # prepare attention masks
         # slf_attn_mask is where we cannot look, i.e., the future and the padding
-        slf_attn_mask_subseq = get_subsequent_mask(event_type)
-        slf_attn_mask_keypad = get_attn_key_pad_mask(seq_k=event_type, seq_q=event_type)
+        slf_attn_mask_subseq = get_subsequent_mask(event_type) # making the future
+        #[[0, 1, 1, 1],[0, 0, 1, 1],[0, 0, 0, 1],[0, 0, 0, 0]]
+        slf_attn_mask_keypad = get_attn_key_pad_mask(seq_k=event_type, seq_q=event_type) # masking the padded ones
+        #[False , False, False,  True],[False, False, False,  True],[ False, False, False,  True],[ False, False, False,  True]]
         slf_attn_mask_keypad = slf_attn_mask_keypad.type_as(slf_attn_mask_subseq)
+        # tensor([[[0, 0, 0, 1],[0, 0, 0, 1],[0, 0, 0, 1],[0, 0, 0, 1]], # 
         slf_attn_mask = (slf_attn_mask_keypad + slf_attn_mask_subseq).gt(0)
-
-        tem_enc = self.temporal_enc(event_time, non_pad_mask)
+        # [[[ False,  True,  True,  True],[ False, False,  True,  True],[ False, False, False,  True],[ False, False, False,  True]] 
+        # true means masked --- used for masked self attntion 
+        tem_enc = self.temporal_enc(event_time, non_pad_mask) # non_pad_mask has ones whenever padding is not there
         enc_output = self.event_emb(event_type)
 
         for enc_layer in self.layer_stack:
