@@ -27,8 +27,9 @@ def compute_event(event, non_pad_mask):
 def compute_integral_biased(all_lambda, time, non_pad_mask):
     """ Log-likelihood of non-events, using linear interpolation. """
 
-    diff_time = (time[:, 1:] - time[:, :-1]) * non_pad_mask[:, 1:]
-    diff_lambda = (all_lambda[:, 1:] + all_lambda[:, :-1]) * non_pad_mask[:, 1:]
+    diff_time = (time[:, 1:] - time[:, :-1]) * non_pad_mask[:, 1:] # this is to caculate time lag between events
+    #--------------?????????????????????????-----------------------
+    diff_lambda = (all_lambda[:, 1:] + all_lambda[:, :-1]) * non_pad_mask[:, 1:] # why difference in lambda is additive?
 
     biased_integral = diff_lambda * diff_time
     result = 0.5 * biased_integral
@@ -41,12 +42,15 @@ def compute_integral_unbiased(model, data, time, non_pad_mask, type_mask):
     num_samples = 100
 
     diff_time = (time[:, 1:] - time[:, :-1]) * non_pad_mask[:, 1:]
-    temp_time = diff_time.unsqueeze(2) * \
-                torch.rand([*diff_time.size(), num_samples], device=data.device)
+    temp_time = diff_time.unsqueeze(2) *\
+          torch.rand([*diff_time.size(), num_samples], device=data.device) 
+    # \ this is the symbol for line continuation
+    # *diff_time.size() the aestrisk in from of size just gets the value inside the set containg shape of temsor --works with temsors
     temp_time /= (time[:, :-1] + 1).unsqueeze(2)
 
-    temp_hid = model.linear(data)[:, 1:, :]
+    temp_hid = model.linear(data)[:, 1:, :] # hidden encoding from model
     temp_hid = torch.sum(temp_hid * type_mask[:, 1:, :], dim=2, keepdim=True)
+    # type_mask is event type mask
 
     all_lambda = softplus(temp_hid + model.alpha * temp_time, model.beta)
     all_lambda = torch.sum(all_lambda, dim=2) / num_samples
@@ -60,10 +64,11 @@ def log_likelihood(model, data, time, types):
 
     non_pad_mask = get_non_pad_mask(types).squeeze(2)
 
-    type_mask = torch.zeros([*types.size(), model.num_types], device=data.device)
+    type_mask = torch.zeros([*types.size(), model.num_types], device=data.device) # num_types is no. of distinct events
     for i in range(model.num_types):
         type_mask[:, :, i] = (types == i + 1).bool().to(data.device)
-
+    # type_mask isd the make for event type for each entry in event stream a vector of size num_types is created with 0 
+    # at event type of that event and rest 1
     all_hid = model.linear(data)
     all_lambda = softplus(all_hid, model.beta)
     type_lambda = torch.sum(all_lambda * type_mask, dim=2)
@@ -84,17 +89,20 @@ def type_loss(prediction, types, loss_func):
     """ Event prediction loss, cross entropy or label smoothing. """
 
     # convert [1,2,3] based types to [0,1,2]; also convert padding events to -1
-    truth = types[:, 1:] - 1
-    prediction = prediction[:, :-1, :]
+    truth = types[:, 1:] - 1 
+    # truth's row will be actual event type for each stream of event
+    prediction = prediction[:, :-1, :] # original prediction (1,5,75) ---> (1,3,75) 75:no of events, 5 = max steam length
 
-    pred_type = torch.max(prediction, dim=-1)[1]
+    pred_type = torch.max(prediction, dim=-1)[1] # maximum out of last dimension 
     correct_num = torch.sum(pred_type == truth)
 
     # compute cross entropy loss
     if isinstance(loss_func, LabelSmoothingLoss):
         loss = loss_func(prediction, truth)
     else:
-        loss = loss_func(prediction.transpose(1, 2), truth)
+        loss = loss_func(prediction.transpose(1, 2), truth) # transpose changes (m,n,p) to (m,p,n)
+        # essentially for each event type we collate the prediction value in each row-- row 1 prob of event type 0 for 
+        # various events in the same event stream
 
     loss = torch.sum(loss)
     return loss, correct_num
