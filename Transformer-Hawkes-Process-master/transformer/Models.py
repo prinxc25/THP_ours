@@ -160,16 +160,22 @@ class Transformer(nn.Module):
         self.linear = nn.Linear(d_model, num_types)
 
         # parameter for the weight of time difference
-        self.alpha = nn.Parameter(torch.tensor(-0.1))
+        self.alpha_1 = nn.Parameter(-torch.rand(1, requires_grad = True))
+        
+        # parameter for the weight of time difference
+        self.alpha_2 = nn.Parameter(-torch.rand(1, requires_grad = True))
 
         # parameter for the softplus function
         self.beta = nn.Parameter(torch.tensor(1.0))
         # parameter for the softplus function
-        self.gamma_1 = nn.Parameter(torch.tensor(1.0))
+        self.gamma_1 = nn.Parameter(torch.rand(1, requires_grad = True))
 
         # parameter for the softplus function
-        self.gamma_2 = nn.Parameter(torch.tensor(1.0))
+        self.gamma_2 = nn.Parameter(torch.rand(1, requires_grad = True))
         
+        # parameter for the softplus function
+        self.param_time = nn.Parameter(torch.rand(1, requires_grad = True))
+
         # OPTIONAL recurrent layer, this sometimes helps
         self.rnn = RNN_layers(d_model, d_rnn)
 
