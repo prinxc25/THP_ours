@@ -54,8 +54,8 @@ def compute_integral_unbiased(model,data_prev, data, time, non_pad_mask, type_ma
     temp_hid_prev_next = torch.sum(temp_hid*temp_hid_prev * type_mask[:, 1:, :], dim=2, keepdim=True)
     temp_hid = torch.sum(temp_hid * type_mask[:, 1:, :], dim=2, keepdim=True)
     # all_lambda = softplus(model.gamma_1*temp_hid1 + model.gamma_2*temp_hid2*temp_hid2 + model.alpha * temp_time, model.beta)
-    all_lambda = softplus( model.gamma_1*temp_hid + model.alpha * temp_time, model.beta) \
-    +torch.pow(softplus( model.gamma_2*temp_hid_prev_next + model.alpha * temp_time, model.beta),2)
+    all_lambda = softplus( model.gamma_1*temp_hid + model.alpha_1 * temp_time, model.beta) \
+    +torch.pow(softplus( model.gamma_2*temp_hid_prev_next + model.alpha_2 * (temp_time**model.param_time), model.beta),2)
     all_lambda = torch.sum(all_lambda, dim=2) / num_samples
 
     unbiased_integral = all_lambda * diff_time
