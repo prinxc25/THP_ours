@@ -1,266 +1,166 @@
-import argparse
-import numpy as np
-import pickle
-import time
+import math
 import torch
 import torch.nn as nn
-import torch.optim as optim
+import torch.nn.functional as F
 
-import transformer.Constants as Constants
-import Utils
-
-from preprocess.Dataset import get_dataloader
-from transformer.Models import Transformer
-from tqdm import tqdm
+from transformer.Models import get_non_pad_mask
 
 
-def prepare_dataloader(opt):
-    """ Load data and prepare dataloader. """
-
-    def load_data(name, dict_name):
-        with open(name, 'rb') as f:
-            data = pickle.load(f, encoding='latin-1')
-            num_types = data['dim_process']
-            data = data[dict_name]
-            return data, int(num_types)
-
-    print('[Info] Loading train data...')
-    train_data, num_types = load_data(opt.data + 'train.pkl', 'train')
-    print('[Info] Loading dev data...')
-    dev_data, _ = load_data(opt.data + 'dev.pkl', 'dev')
-    print('[Info] Loading test data...')
-    test_data, _ = load_data(opt.data + 'test.pkl', 'test')
-
-    trainloader = get_dataloader(train_data, opt.batch_size, shuffle=True)
-    testloader = get_dataloader(test_data, opt.batch_size, shuffle=False)
-    return trainloader, testloader, num_types
+def softplus(x, beta):
+    # hard thresholding at 20
+    temp = beta * x
+    temp[temp > 20] = 20
+    return 1.0 / beta * torch.log(1 + torch.exp(temp))
 
 
-def train_epoch(model, training_data, optimizer, pred_loss_func, opt, enc_out_prev):
-    """ Epoch operation in training phase. """
+def compute_event(event, non_pad_mask):
+    """ Log-likelihood of events. """
 
-    model.train()
+    # add 1e-9 in case some events have 0 likelihood
+    event += math.pow(10, -9)
+    event.masked_fill_(~non_pad_mask.bool(), 1.0)
 
-    total_event_ll = 0  # cumulative event log-likelihood
-    total_time_se = 0  # cumulative time prediction squared-error
-    total_event_rate = 0  # cumulative number of correct prediction
-    total_num_event = 0  # number of total events
-    total_num_pred = 0  # number of predictions
-    for batch in tqdm(training_data, mininterval=2,
-                      desc='  - (Training)   ', leave=False):
-        """ prepare data """
-        event_time, time_gap, event_type = map(lambda x: x.to(opt.device), batch)
-
-        """ forward """
-        optimizer.zero_grad()
-
-        enc_out, prediction = model(event_type, event_time)
-
-        """ backward """
-        # negative log-likelihood
-        event_ll, non_event_ll = Utils.log_likelihood(model,enc_out_prev, enc_out, event_time, event_type)
-        event_loss = -torch.sum(event_ll - non_event_ll)
-
-        # type prediction
-        pred_loss, pred_num_event = Utils.type_loss(prediction[0], event_type, pred_loss_func)
-
-        # time prediction
-        se = Utils.time_loss(prediction[1], event_time)
-
-        # SE is usually large, scale it to stabilize training
-        scale_time_loss = 100
-        loss = event_loss + pred_loss + se / scale_time_loss
-        loss.backward()
-
-        """ update parameters """
-        optimizer.step()
-
-        """ note keeping """
-        total_event_ll += -event_loss.item()
-        total_time_se += se.item()
-        total_event_rate += pred_num_event.item()
-        total_num_event += event_type.ne(Constants.PAD).sum().item()
-        # we do not predict the first event
-        total_num_pred += event_type.ne(Constants.PAD).sum().item() - event_time.shape[0]
-
-    rmse = np.sqrt(total_time_se / total_num_pred)
-    return total_event_ll / total_num_event, total_event_rate / total_num_pred, rmse, enc_out
+    result = torch.log(event)
+    return result
 
 
-def eval_epoch(model, validation_data, pred_loss_func, opt, enc_out_prev):
-    """ Epoch operation in evaluation phase. """
+def compute_integral_biased(all_lambda, time, non_pad_mask):
+    """ Log-likelihood of non-events, using linear interpolation. """
 
-    model.eval()
+    diff_time = (time[:, 1:] - time[:, :-1]) * non_pad_mask[:, 1:] # this is to caculate time lag between events
+    #--------------?????????????????????????-----------------------
+    diff_lambda = (all_lambda[:, 1:] + all_lambda[:, :-1]) * non_pad_mask[:, 1:] # why difference in lambda is additive?
 
-    total_event_ll = 0  # cumulative event log-likelihood
-    total_time_se = 0  # cumulative time prediction squared-error
-    total_event_rate = 0  # cumulative number of correct prediction
-    total_num_event = 0  # number of total events
-    total_num_pred = 0  # number of predictions
-    with torch.no_grad():
-        for batch in tqdm(validation_data, mininterval=2,
-                          desc='  - (Validation) ', leave=False):
-            """ prepare data """
-            event_time, time_gap, event_type = map(lambda x: x.to(opt.device), batch)
-
-            """ forward """
-            enc_out, prediction = model(event_type, event_time)
-
-            """ compute loss """
-            event_ll, non_event_ll = Utils.log_likelihood(model, emc_out_prev, enc_out, event_time, event_type)
-            event_loss = -torch.sum(event_ll - non_event_ll)
-            _, pred_num = Utils.type_loss(prediction[0], event_type, pred_loss_func)
-            se = Utils.time_loss(prediction[1], event_time)
-
-            """ note keeping """
-            total_event_ll += -event_loss.item()
-            total_time_se += se.item()
-            total_event_rate += pred_num.item()
-            total_num_event += event_type.ne(Constants.PAD).sum().item()
-            total_num_pred += event_type.ne(Constants.PAD).sum().item() - event_time.shape[0]
-
-    rmse = np.sqrt(total_time_se / total_num_pred)
-    return total_event_ll / total_num_event, total_event_rate / total_num_pred, rmse, enc_out
+    biased_integral = diff_lambda * diff_time
+    result = 0.5 * biased_integral
+    return result
 
 
-def train(model, training_data, validation_data, optimizer, scheduler, pred_loss_func, opt):
-    """ Start training. """
-    train_event_losses = []  # validation log-likelihood
-    train_pred_losses = []  # validation event type prediction accuracy
-    train_rmse = []  # validation event time prediction RMSE
+def compute_integral_unbiased(model,data_prev, data, time, non_pad_mask, type_mask):
+    """ Log-likelihood of non-events, using Monte Carlo integration. """
 
-    valid_event_losses = []  # validation log-likelihood
-    valid_pred_losses = []  # validation event type prediction accuracy
-    valid_rmse = []  # validation event time prediction RMSE
+    num_samples = 100
+   
+    if data_prev.shape != data.shape:
+       data_prev = data
+    diff_time = (time[:, 1:] - time[:, :-1]) * non_pad_mask[:, 1:]
+    temp_time = diff_time.unsqueeze(2) *\
+          torch.rand([*diff_time.size(), num_samples], device=data.device) 
+    # \ this is the symbol for line continuation
+    # *diff_time.size() the aestrisk in from of size just gets the value inside the set containg shape of temsor --works with temsors
+    temp_time /= (time[:, :-1] + 1).unsqueeze(2)
+    temp_hid = model.linear(data)[:, 1:, :]
+    temp_hid_prev = model.linear(data_prev)[:, 1:, :]
+    temp_hid_prev_next = torch.sum(temp_hid*temp_hid_prev * type_mask[:, 1:, :], dim=2, keepdim=True)
+    temp_hid = torch.sum(temp_hid * type_mask[:, 1:, :], dim=2, keepdim=True)
+    # all_lambda = softplus(model.gamma_1*temp_hid1 + model.gamma_2*temp_hid2*temp_hid2 + model.alpha * temp_time, model.beta)
+    all_lambda = softplus( model.gamma_1*temp_hid + model.alpha * temp_time, model.beta) \
+    +torch.pow(softplus( model.gamma_2*temp_hid_prev_next + model.alpha * temp_time, model.beta),2)
+    all_lambda = torch.sum(all_lambda, dim=2) / num_samples
 
-    for epoch_i in range(opt.epoch):
-        starti = 0 
-        epoch = epoch_i + 1
-        print('[ Epoch', epoch, ']')
-        print(f'value for change no for repv_encoding {starti} for epoch {epoch}')
-        
-        
-        # print(f'alpha : {model.alpha}, beta : {model.beta}, gamma 1: {model.gamma_1}, gamma 2: {model.gamma_2}')
-        start = time.time()
-        if starti == 0:
-          enc_out_prev = 0
-          train_event, train_type, train_time, enc_out = train_epoch(model, training_data, optimizer, pred_loss_func, opt, enc_out_prev)
-          enc_out_prev = enc_out        
-        else:
-          train_event, train_type, train_time, enc_out = train_epoch(model, training_data, optimizer, pred_loss_func, opt, enc_out_prev)
-          
-        print('  - (Training)    loglikelihood: {ll: 8.5f}, '
-              'accuracy: {type: 8.5f}, RMSE: {rmse: 8.5f}, '
-              'elapse: {elapse:3.3f} min'
-              .format(ll=train_event, type=train_type, rmse=train_time, elapse=(time.time() - start) / 60))
-
-        start = time.time()
-        if starti == 1:
-          enc_out_prev = 0
-          valid_event, valid_type, valid_time, enc_out_prev = eval_epoch(model, validation_data, pred_loss_func, opt, enc_out_prev)
-          enc_out_prev = enc_out        
-        else:  
-          valid_event, valid_type, valid_time, enc_out_prev = eval_epoch(model, validation_data, pred_loss_func, opt, enc_out_prev)
-        print('  - (Testing)     loglikelihood: {ll: 8.5f}, '
-              'accuracy: {type: 8.5f}, RMSE: {rmse: 8.5f}, '
-              'elapse: {elapse:3.3f} min'
-              .format(ll=valid_event, type=valid_type, rmse=valid_time, elapse=(time.time() - start) / 60))
-        starti += 1 
-        train_event_losses += [train_event]
-        train_pred_losses += [train_type]
-        train_rmse += [train_time]
-        print('  - [Info] (Training) Maximum ll: {event: 8.5f}, '
-              'Maximum accuracy: {pred: 8.5f}, Minimum RMSE: {rmse: 8.5f}'
-              .format(event=max(train_event_losses), pred=max(train_pred_losses), rmse=min(train_rmse)))
-        
-        
-        valid_event_losses += [valid_event]
-        valid_pred_losses += [valid_type]
-        valid_rmse += [valid_time]
-        print('  - [Info] (testing) Maximum ll: {event: 8.5f}, '
-              'Maximum accuracy: {pred: 8.5f}, Minimum RMSE: {rmse: 8.5f}'
-              .format(event=max(valid_event_losses), pred=max(valid_pred_losses), rmse=min(valid_rmse)))
-        
-        
-        # logging
-        with open(opt.log, 'a') as f:
-            f.write('{epoch}, {ll: 8.5f}, {acc: 8.5f}, {rmse: 8.5f}\n'
-                    .format(epoch=epoch, ll=valid_event, acc=valid_type, rmse=valid_time))
-
-        scheduler.step()
+    unbiased_integral = all_lambda * diff_time
+    return unbiased_integral
 
 
-def main():
-    """ Main function. """
+def log_likelihood(model, data_prev, data, time, types):
+    """ Log-likelihood of sequence. """
+    if data_prev.shape != data.shape:
+       data_prev = data
+      
+    non_pad_mask = get_non_pad_mask(types).squeeze(2)
 
-    parser = argparse.ArgumentParser()
+    type_mask = torch.zeros([*types.size(), model.num_types], device=data.device) # num_types is no. of distinct events
+    for i in range(model.num_types):
+        type_mask[:, :, i] = (types == i + 1).bool().to(data.device)
+    # type_mask isd the make for event type for each entry in event stream a vector of size num_types is created with 0 
+    # at event type of that event and rest 1
 
-    parser.add_argument('-data', required=True)
+    all_hid = model.linear(data)
+    all_hid_prev_next = model.linear(data*data_prev)
+    # all_lambda = softplus( model.gamma_1*all_hid + model.gamma_2*all_hid*all_hid, model.beta)
+    all_lambda = softplus( model.gamma_1*all_hid , model.beta) \
+    + torch.pow(softplus(model.gamma_2*all_hid*all_hid_prev_next, model.beta), 2)
+    # all_hid = model.linear(data)
+    # all_lambda = softplus(all_hid, model.beta)
+    type_lambda = torch.sum(all_lambda * type_mask, dim=2)
 
-    parser.add_argument('-epoch', type=int, default=30)
-    parser.add_argument('-batch_size', type=int, default=16)
+    # event log-likelihood
+    event_ll = compute_event(type_lambda, non_pad_mask)
+    event_ll = torch.sum(event_ll, dim=-1)
 
-    parser.add_argument('-d_model', type=int, default=64)
-    parser.add_argument('-d_rnn', type=int, default=256)
-    parser.add_argument('-d_inner_hid', type=int, default=128)
-    parser.add_argument('-d_k', type=int, default=16)
-    parser.add_argument('-d_v', type=int, default=16)
+    # non-event log-likelihood, either numerical integration or MC integration
+    # non_event_ll = compute_integral_biased(type_lambda, time, non_pad_mask)
+    non_event_ll = compute_integral_unbiased(model, data_prev, data, time, non_pad_mask, type_mask)
+    non_event_ll = torch.sum(non_event_ll, dim=-1)
 
-    parser.add_argument('-n_head', type=int, default=4)
-    parser.add_argument('-n_layers', type=int, default=4)
+    return event_ll, non_event_ll
 
-    parser.add_argument('-dropout', type=float, default=0.1)
-    parser.add_argument('-lr', type=float, default=1e-4)
-    parser.add_argument('-smooth', type=float, default=0.1)
 
-    parser.add_argument('-log', type=str, default='log.txt')
+def type_loss(prediction, types, loss_func):
+    """ Event prediction loss, cross entropy or label smoothing. """
 
-    opt = parser.parse_args()
+    # convert [1,2,3] based types to [0,1,2]; also convert padding events to -1
+    truth = types[:, 1:] - 1 
+    # truth's row will be actual event type for each stream of event
+    prediction = prediction[:, :-1, :] # original prediction (1,5,75) ---> (1,3,75) 75:no of events, 5 = max steam length
 
-    # default device is CUDA
-    opt.device = torch.device('cuda')
+    pred_type = torch.max(prediction, dim=-1)[1] # maximum out of last dimension 
+    correct_num = torch.sum(pred_type == truth)
 
-    # setup the log file
-    with open(opt.log, 'w') as f:
-        f.write('Epoch, Log-likelihood, Accuracy, RMSE\n')
-
-    print('[Info] parameters: {}'.format(opt))
-
-    """ prepare dataloader """
-    trainloader, testloader, num_types = prepare_dataloader(opt)
-
-    """ prepare model """
-    model = Transformer(
-        num_types=num_types,
-        d_model=opt.d_model,
-        d_rnn=opt.d_rnn,
-        d_inner=opt.d_inner_hid,
-        n_layers=opt.n_layers,
-        n_head=opt.n_head,
-        d_k=opt.d_k,
-        d_v=opt.d_v,
-        dropout=opt.dropout,
-    )
-    model.to(opt.device)
-
-    """ optimizer and scheduler """
-    optimizer = optim.Adam(filter(lambda x: x.requires_grad, model.parameters()),
-                           opt.lr, betas=(0.9, 0.999), eps=1e-05)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, 10, gamma=0.5)
-
-    """ prediction loss function, either cross entropy or label smoothing """
-    if opt.smooth > 0:
-        pred_loss_func = Utils.LabelSmoothingLoss(opt.smooth, num_types, ignore_index=-1)
+    # compute cross entropy loss
+    if isinstance(loss_func, LabelSmoothingLoss):
+        loss = loss_func(prediction, truth)
     else:
-        pred_loss_func = nn.CrossEntropyLoss(ignore_index=-1, reduction='none')
+        loss = loss_func(prediction.transpose(1, 2), truth) # transpose changes (m,n,p) to (m,p,n)
+        # essentially for each event type we collate the prediction value in each row-- row 1 prob of event type 0 for 
+        # various events in the same event stream
 
-    """ number of parameters """
-    num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print('[Info] Number of parameters: {}'.format(num_params))
-
-    """ train the model """
-    train(model, trainloader, testloader, optimizer, scheduler, pred_loss_func, opt)
+    loss = torch.sum(loss)
+    return loss, correct_num
 
 
-if __name__ == '__main__':
-    main()
+def time_loss(prediction, event_time):
+    """ Time prediction loss. """
+
+    prediction.squeeze_(-1)
+
+    true = event_time[:, 1:] - event_time[:, :-1]
+    prediction = prediction[:, :-1]
+
+    # event time gap prediction
+    diff = prediction - true
+    se = torch.sum(diff * diff)
+    return se
+
+
+class LabelSmoothingLoss(nn.Module):
+    """
+    With label smoothing,
+    KL-divergence between q_{smoothed ground truth prob.}(w)
+    and p_{prob. computed by model}(w) is minimized.
+    """
+
+    def __init__(self, label_smoothing, tgt_vocab_size, ignore_index=-100):
+        assert 0.0 < label_smoothing <= 1.0
+        super(LabelSmoothingLoss, self).__init__()
+
+        self.eps = label_smoothing
+        self.num_classes = tgt_vocab_size
+        self.ignore_index = ignore_index
+
+    def forward(self, output, target):
+        """
+        output (FloatTensor): (batch_size) x n_classes
+        target (LongTensor): batch_size
+        """
+
+        non_pad_mask = target.ne(self.ignore_index).float()
+
+        target[target.eq(self.ignore_index)] = 0
+        one_hot = F.one_hot(target, num_classes=self.num_classes).float()
+        one_hot = one_hot * (1 - self.eps) + (1 - one_hot) * self.eps / self.num_classes
+
+        log_prb = F.log_softmax(output, dim=-1)
+        loss = -(one_hot * log_prb).sum(dim=-1)
+        loss = loss * non_pad_mask
+        return loss
