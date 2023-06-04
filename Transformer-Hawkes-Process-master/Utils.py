@@ -41,7 +41,7 @@ def compute_integral_unbiased(model,data_prev, data, time, non_pad_mask, type_ma
 
     num_samples = 100
    
-    if data_prev == 0:
+    if data_prev.shape != data.shape:
        data_prev = data
     diff_time = (time[:, 1:] - time[:, :-1]) * non_pad_mask[:, 1:]
     temp_time = diff_time.unsqueeze(2) *\
@@ -50,19 +50,21 @@ def compute_integral_unbiased(model,data_prev, data, time, non_pad_mask, type_ma
     # *diff_time.size() the aestrisk in from of size just gets the value inside the set containg shape of temsor --works with temsors
     temp_time /= (time[:, :-1] + 1).unsqueeze(2)
     temp_hid = model.linear(data)[:, 1:, :]
+    temp_hid_prev = model.linear(data_prev)[:, 1:, :]
     temp_hid_prev_next = torch.sum(temp_hid*temp_hid_prev * type_mask[:, 1:, :], dim=2, keepdim=True)
     temp_hid = torch.sum(temp_hid * type_mask[:, 1:, :], dim=2, keepdim=True)
     # all_lambda = softplus(model.gamma_1*temp_hid1 + model.gamma_2*temp_hid2*temp_hid2 + model.alpha * temp_time, model.beta)
     all_lambda = softplus( model.gamma_1*temp_hid + model.alpha * temp_time, model.beta) \
     +torch.pow(softplus( model.gamma_2*temp_hid_prev_next + model.alpha * temp_time, model.beta),2)
-  
+    all_lambda = torch.sum(all_lambda, dim=2) / num_samples
+
     unbiased_integral = all_lambda * diff_time
     return unbiased_integral
 
 
 def log_likelihood(model, data_prev, data, time, types):
     """ Log-likelihood of sequence. """
-    if data_prev == 0:
+    if data_prev.shape != data.shape:
        data_prev = data
       
     non_pad_mask = get_non_pad_mask(types).squeeze(2)
