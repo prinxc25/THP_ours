@@ -36,7 +36,7 @@ def prepare_dataloader(opt):
     return trainloader, testloader, num_types
 
 
-def train_epoch(model, training_data, optimizer, pred_loss_func, opt):
+def train_epoch(model, training_data, optimizer, pred_loss_func, opt, enc_out_prev):
     """ Epoch operation in training phase. """
 
     model.train()
@@ -58,7 +58,7 @@ def train_epoch(model, training_data, optimizer, pred_loss_func, opt):
 
         """ backward """
         # negative log-likelihood
-        event_ll, non_event_ll = Utils.log_likelihood(model, enc_out, event_time, event_type)
+        event_ll, non_event_ll = Utils.log_likelihood(model,enc_out_prev, enc_out, event_time, event_type)
         event_loss = -torch.sum(event_ll - non_event_ll)
 
         # type prediction
@@ -84,10 +84,10 @@ def train_epoch(model, training_data, optimizer, pred_loss_func, opt):
         total_num_pred += event_type.ne(Constants.PAD).sum().item() - event_time.shape[0]
 
     rmse = np.sqrt(total_time_se / total_num_pred)
-    return total_event_ll / total_num_event, total_event_rate / total_num_pred, rmse
+    return total_event_ll / total_num_event, total_event_rate / total_num_pred, rmse, enc_out
 
 
-def eval_epoch(model, validation_data, pred_loss_func, opt):
+def eval_epoch(model, validation_data, pred_loss_func, opt, enc_out_prev):
     """ Epoch operation in evaluation phase. """
 
     model.eval()
@@ -107,7 +107,7 @@ def eval_epoch(model, validation_data, pred_loss_func, opt):
             enc_out, prediction = model(event_type, event_time)
 
             """ compute loss """
-            event_ll, non_event_ll = Utils.log_likelihood(model, enc_out, event_time, event_type)
+            event_ll, non_event_ll = Utils.log_likelihood(model, emc_out_prev, enc_out, event_time, event_type)
             event_loss = -torch.sum(event_ll - non_event_ll)
             _, pred_num = Utils.type_loss(prediction[0], event_type, pred_loss_func)
             se = Utils.time_loss(prediction[1], event_time)
@@ -120,7 +120,7 @@ def eval_epoch(model, validation_data, pred_loss_func, opt):
             total_num_pred += event_type.ne(Constants.PAD).sum().item() - event_time.shape[0]
 
     rmse = np.sqrt(total_time_se / total_num_pred)
-    return total_event_ll / total_num_event, total_event_rate / total_num_pred, rmse
+    return total_event_ll / total_num_event, total_event_rate / total_num_pred, rmse, enc_out
 
 
 def train(model, training_data, validation_data, optimizer, scheduler, pred_loss_func, opt):
@@ -134,23 +134,38 @@ def train(model, training_data, validation_data, optimizer, scheduler, pred_loss
     valid_rmse = []  # validation event time prediction RMSE
 
     for epoch_i in range(opt.epoch):
+        starti = 0 
         epoch = epoch_i + 1
         print('[ Epoch', epoch, ']')
+        print(f'value for change no for repv_encoding {starti} for epoch {epoch}')
+        
+        
         # print(f'alpha : {model.alpha}, beta : {model.beta}, gamma 1: {model.gamma_1}, gamma 2: {model.gamma_2}')
         start = time.time()
-        train_event, train_type, train_time = train_epoch(model, training_data, optimizer, pred_loss_func, opt)
+        if starti == 0:
+          enc_out_prev = 0
+          train_event, train_type, train_time, enc_out = train_epoch(model, training_data, optimizer, pred_loss_func, opt, enc_out_prev)
+          enc_out_prev = enc_out        
+        else:
+          train_event, train_type, train_time, enc_out = train_epoch(model, training_data, optimizer, pred_loss_func, opt, enc_out_prev)
+          
         print('  - (Training)    loglikelihood: {ll: 8.5f}, '
               'accuracy: {type: 8.5f}, RMSE: {rmse: 8.5f}, '
               'elapse: {elapse:3.3f} min'
               .format(ll=train_event, type=train_type, rmse=train_time, elapse=(time.time() - start) / 60))
 
         start = time.time()
-        valid_event, valid_type, valid_time = eval_epoch(model, validation_data, pred_loss_func, opt)
+        if starti == 1:
+          enc_out_prev = 0
+          valid_event, valid_type, valid_time, enc_out_prev = eval_epoch(model, validation_data, pred_loss_func, opt, enc_out_prev)
+          enc_out_prev = enc_out        
+        else:  
+          valid_event, valid_type, valid_time, enc_out_prev = eval_epoch(model, validation_data, pred_loss_func, opt, enc_out_prev)
         print('  - (Testing)     loglikelihood: {ll: 8.5f}, '
               'accuracy: {type: 8.5f}, RMSE: {rmse: 8.5f}, '
               'elapse: {elapse:3.3f} min'
               .format(ll=valid_event, type=valid_type, rmse=valid_time, elapse=(time.time() - start) / 60))
-
+        starti += 1 
         train_event_losses += [train_event]
         train_pred_losses += [train_type]
         train_rmse += [train_time]
