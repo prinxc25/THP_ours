@@ -54,11 +54,11 @@ def train_epoch(model, training_data, optimizer, pred_loss_func, opt):
         """ forward """
         optimizer.zero_grad()
 
-        enc_out, prediction = model(event_type, event_time)
+        enc_out_prev, enc_out, prediction = model(event_type, event_time)
 
         """ backward """
         # negative log-likelihood
-        event_ll, non_event_ll = Utils.log_likelihood(model, enc_out, event_time, event_type)
+        event_ll, non_event_ll = Utils.log_likelihood(model, enc_out_prev, enc_out, event_time, event_type)
         event_loss = -torch.sum(event_ll - non_event_ll)
 
         # type prediction
@@ -104,10 +104,10 @@ def eval_epoch(model, validation_data, pred_loss_func, opt):
             event_time, time_gap, event_type = map(lambda x: x.to(opt.device), batch)
 
             """ forward """
-            enc_out, prediction = model(event_type, event_time)
+            enc_out_prev, enc_out, prediction = model(event_type, event_time)
 
             """ compute loss """
-            event_ll, non_event_ll = Utils.log_likelihood(model, enc_out, event_time, event_type)
+            event_ll, non_event_ll = Utils.log_likelihood(model,enc_out_prev, enc_out, event_time, event_type)
             event_loss = -torch.sum(event_ll - non_event_ll)
             _, pred_num = Utils.type_loss(prediction[0], event_type, pred_loss_func)
             se = Utils.time_loss(prediction[1], event_time)
