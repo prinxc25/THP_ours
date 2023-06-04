@@ -131,7 +131,7 @@ class RNN_layers(nn.Module):
         out = nn.utils.rnn.pad_packed_sequence(temp, batch_first=True)[0]
 
         out = self.projection(out)
-        return out
+        return out, data
 
 
 class Transformer(nn.Module):
@@ -158,12 +158,22 @@ class Transformer(nn.Module):
 
         # convert hidden vectors into a scalar
         self.linear = nn.Linear(d_model, num_types)
-
         # parameter for the weight of time difference
-        self.alpha = nn.Parameter(torch.tensor(-0.1))
+        self.alpha_1 = nn.Parameter(-torch.rand(1, requires_grad = True))
+        
+        # parameter for the weight of time difference
+        self.alpha_2 = nn.Parameter(-torch.rand(1, requires_grad = True))
 
         # parameter for the softplus function
         self.beta = nn.Parameter(torch.tensor(1.0))
+        # parameter for the softplus function
+        self.gamma_1 = nn.Parameter(torch.rand(1, requires_grad = True))
+
+        # parameter for the softplus function
+        self.gamma_2 = nn.Parameter(torch.rand(1, requires_grad = True))
+        
+        # parameter for the softplus function
+        self.param_time = nn.Parameter(torch.rand(1, requires_grad = True))
 
         # OPTIONAL recurrent layer, this sometimes helps
         self.rnn = RNN_layers(d_model, d_rnn)
@@ -188,10 +198,10 @@ class Transformer(nn.Module):
         non_pad_mask = get_non_pad_mask(event_type)
 
         enc_output = self.encoder(event_type, event_time, non_pad_mask)
-        enc_output = self.rnn(enc_output, non_pad_mask)
-
+        enc_output, enc_output_prev = self.rnn(enc_output, non_pad_mask)
+        # print(enc_output.shape, out2.shape, torch.equal(enc_output, out2))
         time_prediction = self.time_predictor(enc_output, non_pad_mask)
 
         type_prediction = self.type_predictor(enc_output, non_pad_mask)
 
-        return enc_output, (type_prediction, time_prediction)
+        return enc_output_prev , enc_output, (type_prediction, time_prediction)
