@@ -59,7 +59,7 @@ def compute_integral_unbiased(model, data_prev, data, time, non_pad_mask, type_m
     temp_hid = torch.sum(temp_hid * type_mask[:, 1:, :], dim=2, keepdim=True)
     # all_lambda = softplus(model.gamma_1*temp_hid1 + model.gamma_2*temp_hid2*temp_hid2 + model.alpha * temp_time, model.beta)
     all_lambda = softplus( model.gamma_1*temp_hid + model.alpha_1 * temp_time, model.beta) \
-    +torch.pow(softplus( model.gamma_2*temp_hid_prev_next + model.alpha_2 * (temp_time**model.param_time), model.beta),2)
+    +torch.pow(softplus( model.gamma_2*temp_hid_prev_next + model.alpha_2 * (temp_time**model.param_time), model.beta),2) # power to the second term
     
     all_lambda = torch.sum(all_lambda, dim=2) / num_samples
     
@@ -81,7 +81,7 @@ def log_likelihood(model, data_prev, data, time, types):
     all_hid_prev_next = model.linear(data*data_prev)
     # all_lambda = softplus( model.gamma_1*all_hid + model.gamma_2*all_hid*all_hid, model.beta)
     all_lambda = softplus( model.gamma_1*all_hid , model.beta) \
-    + torch.pow(softplus(model.gamma_2*all_hid*all_hid_prev_next, model.beta), 2)
+    + torch.pow(softplus(model.gamma_2*all_hid*all_hid_prev_next, model.beta), 2) # power to the second term
     # all_hid = model.linear(data)
 
     # all_lambda = softplus(all_hid, model.beta)
