@@ -11,7 +11,12 @@ def softplus(x, beta):
     temp = beta * x
     temp[temp > 20] = 20
     return 1.0 / beta * torch.log(1 + torch.exp(temp))
-
+    
+def softplus2(x,y, beta):
+    # hard thresholding at 20
+    temp = beta * x
+    temp[temp > 20] = 20
+    return 1.0 / beta * torch.log(1 + torch.exp(temp + y))
 
 def compute_event(event, non_pad_mask):
     """ Log-likelihood of events. """
@@ -36,7 +41,7 @@ def compute_integral_biased(all_lambda, time, non_pad_mask):
     return result
 
 
-def compute_integral_unbiased(model, data_prev, data, time, non_pad_mask, type_mask):
+def compute_integral_unbiased(model, data, time, non_pad_mask, type_mask):
     """ Log-likelihood of non-events, using Monte Carlo integration. """
 
     num_samples = 100
@@ -47,27 +52,19 @@ def compute_integral_unbiased(model, data_prev, data, time, non_pad_mask, type_m
     # \ this is the symbol for line continuation
     # *diff_time.size() the aestrisk in from of size just gets the value inside the set containg shape of temsor --works with temsors
     temp_time /= (time[:, :-1] + 1).unsqueeze(2)
+
     temp_hid = model.linear(data)[:, 1:, :] # hidden encoding from model
-    # temp_hid = torch.sum(temp_hid * type_mask[:, 1:, :], dim=2, keepdim=True)
-    # # type_mask is event type mask
-
-    # all_lambda = softplus(temp_hid + model.alpha * temp_time, model.beta)
-    # all_lambda = torch.sum(all_lambda, dim=2) / num_samples
-
-    temp_hid_prev = model.linear(data_prev)[:, 1:, :]
-    temp_hid_prev_next = torch.sum(temp_hid*temp_hid_prev * type_mask[:, 1:, :], dim=2, keepdim=True)
     temp_hid = torch.sum(temp_hid * type_mask[:, 1:, :], dim=2, keepdim=True)
-    # all_lambda = softplus(model.gamma_1*temp_hid1 + model.gamma_2*temp_hid2*temp_hid2 + model.alpha * temp_time, model.beta)
-    all_lambda = softplus( model.gamma_1*temp_hid + model.alpha_1 * temp_time, model.beta) \
-    +torch.pow(softplus( model.gamma_2*temp_hid_prev_next + model.alpha_2 * (temp_time**model.param_time), model.beta),2) # power to the second term
-    
+    # type_mask is event type mask
+
+    all_lambda = softplus(temp_hid + model.alpha * temp_time, model.beta)
     all_lambda = torch.sum(all_lambda, dim=2) / num_samples
-    
+
     unbiased_integral = all_lambda * diff_time
     return unbiased_integral
 
 
-def log_likelihood(model, data_prev, data, time, types):
+def log_likelihood(model, data, time, types):
     """ Log-likelihood of sequence. """
 
     non_pad_mask = get_non_pad_mask(types).squeeze(2)
@@ -78,13 +75,15 @@ def log_likelihood(model, data_prev, data, time, types):
     # type_mask isd the make for event type for each entry in event stream a vector of size num_types is created with 0 
     # at event type of that event and rest 1
     all_hid = model.linear(data)
-    all_hid_prev_next = model.linear(data*data_prev)
-    # all_lambda = softplus( model.gamma_1*all_hid + model.gamma_2*all_hid*all_hid, model.beta)
-    all_lambda = softplus( model.gamma_1*all_hid , model.beta) \
-    + torch.pow(softplus(model.gamma_2*all_hid*all_hid_prev_next, model.beta), 2) # power to the second term
-    # all_hid = model.linear(data)
-
-    # all_lambda = softplus(all_hid, model.beta)
+    # print(f'data size :{data.shape}')
+    # print(f'hidden layer size: {all_hid.shape}')
+    # print(f'hidden layer : {all_hid}')
+    # Create a tensor of zeros with the same shape as the original tensor
+    zeros_tensor = torch.zeros_like(all_hid)
+    # Concatenate the zeros tensor with the original tensor along the first dimension
+    all_hid_next = torch.cat((zeros_tensor[:, :1, :], all_hid[:, :1, :]), dim=1)
+    all_hid_cos = F.cosine_similarity(all_hid.type(torch.float), all_hid_next.type(torch.float), dim=1).unsqueeze(0).unsqueeze(-1) 
+    all_lambda = softplus(all_hid + all_hid_cos, model.beta)
     type_lambda = torch.sum(all_lambda * type_mask, dim=2)
 
     # event log-likelihood
@@ -93,7 +92,7 @@ def log_likelihood(model, data_prev, data, time, types):
 
     # non-event log-likelihood, either numerical integration or MC integration
     # non_event_ll = compute_integral_biased(type_lambda, time, non_pad_mask)
-    non_event_ll = compute_integral_unbiased(model, data_prev, data, time, non_pad_mask, type_mask)
+    non_event_ll = compute_integral_unbiased(model, data, time, non_pad_mask, type_mask)
     non_event_ll = torch.sum(non_event_ll, dim=-1)
 
     return event_ll, non_event_ll
