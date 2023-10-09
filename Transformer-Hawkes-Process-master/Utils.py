@@ -11,7 +11,12 @@ def softplus(x, beta):
     temp = beta * x
     temp[temp > 20] = 20
     return 1.0 / beta * torch.log(1 + torch.exp(temp))
-
+    
+def softplus2(x,y, beta):
+    # hard thresholding at 20
+    temp = beta * x
+    temp[temp > 20] = 20
+    return 1.0 / beta * torch.log(1 + torch.exp(temp + y))
 
 def compute_event(event, non_pad_mask):
     """ Log-likelihood of events. """
@@ -70,7 +75,15 @@ def log_likelihood(model, data, time, types):
     # type_mask isd the make for event type for each entry in event stream a vector of size num_types is created with 0 
     # at event type of that event and rest 1
     all_hid = model.linear(data)
-    all_lambda = softplus(all_hid, model.beta)
+    # print(f'data size :{data.shape}')
+    # print(f'hidden layer size: {all_hid.shape}')
+    # print(f'hidden layer : {all_hid}')
+    # Create a tensor of zeros with the same shape as the original tensor
+    zeros_tensor = torch.zeros_like(all_hid)
+    # Concatenate the zeros tensor with the original tensor along the first dimension
+    all_hid_next = torch.cat((zeros_tensor[:, :1, :], all_hid[:, :1, :]), dim=1)
+    all_hid_cos = F.cosine_similarity(all_hid.type(torch.float), all_hid_next.type(torch.float), dim=1).unsqueeze(0).unsqueeze(-1) 
+    all_lambda = softplus(all_hid + all_hid_cos, model.beta)
     type_lambda = torch.sum(all_lambda * type_mask, dim=2)
 
     # event log-likelihood
