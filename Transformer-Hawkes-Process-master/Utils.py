@@ -89,7 +89,7 @@ def log_likelihood(model, data, time, types):
     #unsqueeze(-1) to add one more dimesnion to inner most dimesnion, and repeat function repeats elements 
     #in the innermost dimension as ,all_hid.shape[2]
     #print(f'cos {all_hid_cos.shape}, hid {all_hid.shape}')#, beta {model.beta.shape}')
-    all_lambda = softplus(all_hid + all_hid_cos, model.beta)
+    all_lambda = softplus(all_hid + model.beta_cos*all_hid_cos, model.beta)
     type_lambda = torch.sum(all_lambda * type_mask, dim=2)
 
     # event log-likelihood
