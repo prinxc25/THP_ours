@@ -84,7 +84,7 @@ def log_likelihood(model, data, time, types):
     all_hid_next = torch.cat((zeros_tensor[:, :1, :], all_hid[:, :-1, :]), dim=1)
     # all_hid_cos = F.cosine_similarity(all_hid.type(torch.float), all_hid_next.type(torch.float), dim=-1).\
     #reshape(all_hid.shape[1],1).repeat(1, 1, all_hid.shape[2])
-    F.cosine_similarity(all_hid.type(torch.float), all_hid_next.type(torch.float), \
+    all_hid_cos = F.cosine_similarity(all_hid.type(torch.float), all_hid_next.type(torch.float), \
                         dim=-1).unsqueeze(-1).repeat(1,1,all_hid.shape[2])
     #unsqueeze(-1) to add one more dimesnion to inner most dimesnion, and repeat function repeats elements 
     #in the innermost dimension as ,all_hid.shape[2]
