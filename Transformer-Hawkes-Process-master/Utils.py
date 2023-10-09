@@ -82,7 +82,7 @@ def log_likelihood(model, data, time, types):
     zeros_tensor = torch.zeros_like(all_hid)
     # Concatenate the zeros tensor with the original tensor along the first dimension
     all_hid_next = torch.cat((zeros_tensor[:, :1, :], all_hid[:, :-1, :]), dim=1)
-    all_hid_cos = F.cosine_similarity(all_hid.type(torch.float), all_hid_next.type(torch.float), dim=-1).unsqueeze(0).unsqueeze(-1) 
+    all_hid_cos = F.cosine_similarity(all_hid.type(torch.float), all_hid_next.type(torch.float), dim=-1)..repeat(1, 1, all_hid.shape[2])
     print(f'cos {all_hid_cos.shape}, hid {all_hid.shape}')#, beta {model.beta.shape}')
     all_lambda = softplus(all_hid + all_hid_cos, model.beta)
     type_lambda = torch.sum(all_lambda * type_mask, dim=2)
