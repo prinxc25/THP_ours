@@ -105,7 +105,7 @@ def eval_epoch(model, validation_data, pred_loss_func, opt):
 
             """ forward """
             enc_out, prediction = model(event_type, event_time)
-            print((enc_out.cpu()).size()), (prediction.cpu()).size())
+            # print((enc_out.cpu()).size()), (prediction.cpu()).size())
             """ compute loss """
             event_ll, non_event_ll = Utils.log_likelihood(model, enc_out, event_time, event_type)
             event_loss = -torch.sum(event_ll - non_event_ll)
