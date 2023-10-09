@@ -1,5 +1,5 @@
 device=0
-data=data/data_bookorder/fold1/
+data=/content/drive/MyDrive/data_bookorder/fold1/
 batch=4
 n_head=4
 n_layers=4
